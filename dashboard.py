@@ -15,7 +15,6 @@ st.set_page_config(page_title="Painel ABS Distribuidora", layout="wide", page_ic
 
 # 2. Conexão com o Banco de Dados
 SUPABASE_DB_URL = st.secrets["SUPABASE_DB_URL"]
-
 FUSO_BR = timezone(timedelta(hours=-3))
 
 @st.cache_data(ttl=60) 
@@ -55,6 +54,7 @@ def buscar_dados_cliente(codigo):
         query_tarefas = f"SELECT * FROM tarefas_clientes WHERE CAST(codigo_cliente AS TEXT) = '{codigo}'"
         try:
             df_tarefas = pd.read_sql(query_tarefas, engine)
+            df_tarefas.rename(columns=lambda x: str(x).strip(), inplace=True) # GARANTIA DE NOME EXATO
             df_tarefas = limpar_colunas_tarefas(df_tarefas)
         except:
             df_tarefas = pd.DataFrame()
@@ -92,6 +92,7 @@ def buscar_todas_tarefas():
     try:
         engine = create_engine(SUPABASE_DB_URL)
         df_todas = pd.read_sql("SELECT * FROM tarefas_clientes", engine)
+        df_todas.rename(columns=lambda x: str(x).strip(), inplace=True) # GARANTIA DE NOME EXATO
         df_todas = limpar_colunas_tarefas(df_todas)
         return df_todas
     except Exception as e:
@@ -139,7 +140,7 @@ def gerar_pdf_formatado(df):
         if c_name in ['texto da tarefa', 'texto_da_tarefa']:
             col_widths.append(total_width * 0.35)
         elif c_name in ['nome fantasia', 'nome_fantasia']:
-            col_widths.append(total_width * 0.15) # Dá espaço para o nome do cliente
+            col_widths.append(total_width * 0.15)
         elif c_name in ['qtd solicitada', 'qtd já comprada', 'gv', 'setor', 'operação']:
             col_widths.append(total_width * 0.05)
         else:
@@ -162,7 +163,7 @@ def gerar_pdf_formatado(df):
     doc.build(elements)
     return buffer.getvalue()
 
-# ---> NOVA LISTA ORDENADA (Sem o Mês/Ano e com Nome Fantasia após o código) <---
+# ---> NOVA ESTRUTURA VISUAL (Sem Mês/Ano e com Nome Fantasia após o código) <---
 colunas_ordem_tarefas = [
     'Data Visita', 'Operação', 'codigo_cliente', 'Nome Fantasia', 'GV', 
     'Setor', 'Cluster Primário', 'Categoria', 'QTD Solicitada', 
@@ -496,10 +497,12 @@ elif menu == "📋 Planificador de Tarefas":
     st.caption(f"🔄 Nuvem atualizada com Tarefas em: **{buscar_data_atualizacao('tarefas')}**")
 
     if not df_todas_tarefas.empty:
+        # Função à prova de balas para mapear os filtros
         def obter_coluna(df, possiveis_nomes):
+            col_map = {str(c).lower().strip(): c for c in df.columns}
             for n in possiveis_nomes:
-                if n in df.columns:
-                    return n
+                if str(n).lower().strip() in col_map:
+                    return col_map[str(n).lower().strip()]
             return None
             
         c_cliente = obter_coluna(df_todas_tarefas, ['codigo_cliente', 'codigo cliente', 'cliente'])
