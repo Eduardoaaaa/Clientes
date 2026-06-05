@@ -54,7 +54,6 @@ def buscar_dados_cliente(codigo):
         query_tarefas = f"SELECT * FROM tarefas_clientes WHERE CAST(codigo_cliente AS TEXT) = '{codigo}'"
         try:
             df_tarefas = pd.read_sql(query_tarefas, engine)
-            df_tarefas.rename(columns=lambda x: str(x).strip(), inplace=True) # GARANTIA DE NOME EXATO
             df_tarefas = limpar_colunas_tarefas(df_tarefas)
         except:
             df_tarefas = pd.DataFrame()
@@ -92,7 +91,6 @@ def buscar_todas_tarefas():
     try:
         engine = create_engine(SUPABASE_DB_URL)
         df_todas = pd.read_sql("SELECT * FROM tarefas_clientes", engine)
-        df_todas.rename(columns=lambda x: str(x).strip(), inplace=True) # GARANTIA DE NOME EXATO
         df_todas = limpar_colunas_tarefas(df_todas)
         return df_todas
     except Exception as e:
@@ -119,7 +117,6 @@ def gerar_pdf_formatado(df):
     elements = []
     
     styles = getSampleStyleSheet()
-    
     style_normal = ParagraphStyle('TabelaNormal', parent=styles['Normal'], fontSize=7)
     style_header = ParagraphStyle('TabelaHeader', parent=styles['Normal'], fontSize=8, alignment=1)
     
@@ -163,7 +160,7 @@ def gerar_pdf_formatado(df):
     doc.build(elements)
     return buffer.getvalue()
 
-# ---> NOVA ESTRUTURA VISUAL (Sem Mês/Ano e com Nome Fantasia após o código) <---
+# ---> Mês/Ano REMOVIDO e Nome Fantasia adicionado ao lado do Código <---
 colunas_ordem_tarefas = [
     'Data Visita', 'Operação', 'codigo_cliente', 'Nome Fantasia', 'GV', 
     'Setor', 'Cluster Primário', 'Categoria', 'QTD Solicitada', 
@@ -497,7 +494,6 @@ elif menu == "📋 Planificador de Tarefas":
     st.caption(f"🔄 Nuvem atualizada com Tarefas em: **{buscar_data_atualizacao('tarefas')}**")
 
     if not df_todas_tarefas.empty:
-        # Função à prova de balas para mapear os filtros
         def obter_coluna(df, possiveis_nomes):
             col_map = {str(c).lower().strip(): c for c in df.columns}
             for n in possiveis_nomes:
