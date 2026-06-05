@@ -4,7 +4,6 @@ from sqlalchemy import create_engine
 import plotly.express as px
 import io 
 
-# Importações para a geração do PDF (ReportLab)
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
@@ -13,7 +12,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 # 1. Configuração da página
 st.set_page_config(page_title="Painel ABS Distribuidora", layout="wide", page_icon="📊")
 
-# 2. Conexão com o Banco de Dados
+# 2. Conexão com o Banco de Dados (Usando Cofre Seguro do Streamlit Cloud)
 SUPABASE_DB_URL = st.secrets["SUPABASE_DB_URL"]
 
 @st.cache_data(ttl=300)
@@ -42,20 +41,26 @@ def buscar_dados_cliente(codigo):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
 @st.cache_data(ttl=300)
-def buscar_todas_tarefas():
+def buscar_dados_macro():
     try:
         engine = create_engine(SUPABASE_DB_URL)
-        df_todas = pd.read_sql("SELECT * FROM tarefas_clientes", engine)
-        
-        if 'Data Visita' in df_todas.columns:
-            df_todas['Data Visita'] = pd.to_datetime(df_todas['Data Visita'], errors='coerce').dt.strftime('%d/%m/%Y')
-        if 'Setor' in df_todas.columns:
-            df_todas['Setor'] = df_todas['Setor'].astype(str).apply(lambda x: x[:-2] if x.endswith('.0') else x)
-            
-        return df_todas
+        query = """
+            SELECT TO_CHAR(data_venda, 'YYYY-MM') AS "Mes_Ano",
+                   nome_cliente,
+                   nome_produto,
+                   codigo_produto,
+                   categoria_produto,
+                   equipamento,
+                   SUM(faturamento_reais) AS faturamento_reais,
+                   SUM(volume_hl) AS volume_hl,
+                   SUM(volume_caixas) AS volume_caixas
+            FROM vendas_consolidadas
+            GROUP BY TO_CHAR(data_venda, 'YYYY-MM'), nome_cliente, nome_produto, codigo_produto, categoria_produto, equipamento
+        """
+        df_macro = pd.read_sql(query, engine)
+        return df_macro
     except Exception as e:
-        # AGORA O ERRO VAI FICAR VISÍVEL NA TELA EM VEZ DE ESCONDIDO
-        st.error(f"⚠️ Erro de conexão ao puxar os dados globais: {e}")
+        st.error(f"Erro ao carregar dados macro: {e}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=300)
@@ -71,6 +76,8 @@ def buscar_todas_tarefas():
             
         return df_todas
     except Exception as e:
+        # Erro visível caso a base de tarefas falhe!
+        st.error(f"⚠️ Erro ao buscar a tabela global de tarefas: {e}")
         return pd.DataFrame()
 
 def gerar_excel_formatado(df):
@@ -87,7 +94,6 @@ def gerar_excel_formatado(df):
                 worksheet.set_column(i, i, 20)
     return output.getvalue()
 
-# ---> CORREÇÃO DEFINITIVA DAS CORES NO PDF <---
 def gerar_pdf_formatado(df):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
@@ -105,19 +111,16 @@ def gerar_pdf_formatado(df):
         'TabelaHeader',
         parent=styles['Normal'],
         fontSize=8,
-        alignment=1 # Centralizado
+        alignment=1
     )
     
-    # Injeta a cor BRANCA diretamente no texto do cabeçalho via Tag HTML
     headers = [Paragraph(f"<font color='white'><b>{c}</b></font>", style_header) for c in df.columns]
     data = [headers]
     
     for _, row in df.iterrows():
         linha_formatada = []
         for item in row:
-            # Troca sinais que podem quebrar o XML do PDF
             texto_limpo = str(item).replace("<", "&lt;").replace(">", "&gt;")
-            # Injeta a cor PRETA diretamente em cada célula de dados
             linha_formatada.append(Paragraph(f"<font color='black'>{texto_limpo}</font>", style_normal))
         data.append(linha_formatada)
         
