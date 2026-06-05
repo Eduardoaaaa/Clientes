@@ -42,26 +42,20 @@ def buscar_dados_cliente(codigo):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
 @st.cache_data(ttl=300)
-def buscar_dados_macro():
+def buscar_todas_tarefas():
     try:
         engine = create_engine(SUPABASE_DB_URL)
-        query = """
-            SELECT TO_CHAR(data_venda, 'YYYY-MM') AS "Mes_Ano",
-                   nome_cliente,
-                   nome_produto,
-                   codigo_produto,
-                   categoria_produto,
-                   equipamento,
-                   SUM(faturamento_reais) AS faturamento_reais,
-                   SUM(volume_hl) AS volume_hl,
-                   SUM(volume_caixas) AS volume_caixas
-            FROM vendas_consolidadas
-            GROUP BY TO_CHAR(data_venda, 'YYYY-MM'), nome_cliente, nome_produto, codigo_produto, categoria_produto, equipamento
-        """
-        df_macro = pd.read_sql(query, engine)
-        return df_macro
+        df_todas = pd.read_sql("SELECT * FROM tarefas_clientes", engine)
+        
+        if 'Data Visita' in df_todas.columns:
+            df_todas['Data Visita'] = pd.to_datetime(df_todas['Data Visita'], errors='coerce').dt.strftime('%d/%m/%Y')
+        if 'Setor' in df_todas.columns:
+            df_todas['Setor'] = df_todas['Setor'].astype(str).apply(lambda x: x[:-2] if x.endswith('.0') else x)
+            
+        return df_todas
     except Exception as e:
-        st.error(f"Erro ao carregar dados macro: {e}")
+        # AGORA O ERRO VAI FICAR VISÍVEL NA TELA EM VEZ DE ESCONDIDO
+        st.error(f"⚠️ Erro de conexão ao puxar os dados globais: {e}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=300)
