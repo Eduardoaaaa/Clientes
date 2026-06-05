@@ -138,7 +138,9 @@ def gerar_pdf_formatado(df):
         c_name = str(col).strip().lower()
         if c_name in ['texto da tarefa', 'texto_da_tarefa']:
             col_widths.append(total_width * 0.35)
-        elif c_name in ['qtd solicitada', 'qtd já comprada', 'gv', 'setor', 'mês/ ano', 'operação']:
+        elif c_name in ['nome fantasia', 'nome_fantasia']:
+            col_widths.append(total_width * 0.15) # Dá espaço para o nome do cliente
+        elif c_name in ['qtd solicitada', 'qtd já comprada', 'gv', 'setor', 'operação']:
             col_widths.append(total_width * 0.05)
         else:
             col_widths.append(total_width * 0.08)
@@ -160,8 +162,9 @@ def gerar_pdf_formatado(df):
     doc.build(elements)
     return buffer.getvalue()
 
+# ---> NOVA LISTA ORDENADA (Sem o Mês/Ano e com Nome Fantasia após o código) <---
 colunas_ordem_tarefas = [
-    'Mês/ Ano', 'Data Visita', 'Operação', 'codigo_cliente', 'GV', 
+    'Data Visita', 'Operação', 'codigo_cliente', 'Nome Fantasia', 'GV', 
     'Setor', 'Cluster Primário', 'Categoria', 'QTD Solicitada', 
     'QTD Já Comprada', 'Texto da Tarefa'
 ]
@@ -506,7 +509,6 @@ elif menu == "📋 Planificador de Tarefas":
         c_data_visita = obter_coluna(df_todas_tarefas, ['Data Visita', 'Data_Visita', 'data_visita'])
 
         with st.expander("🔍 Filtros de Segmentação e Rota", expanded=True):
-            # ---> ADICIONADO: Agora temos 5 colunas para acomodar o filtro de Cliente <---
             col1, col2, col3, col4, col5 = st.columns(5)
             
             with col1:
@@ -537,7 +539,6 @@ elif menu == "📋 Planificador de Tarefas":
 
         df_filtrado = df_todas_tarefas.copy()
         
-        # Aplica o filtro de Cliente
         if f_cliente and c_cliente: df_filtrado = df_filtrado[df_filtrado[c_cliente].astype(str).isin(f_cliente)]
         if f_cat and c_cat: df_filtrado = df_filtrado[df_filtrado[c_cat].astype(str).isin(f_cat)]
         if f_clust and c_clust: df_filtrado = df_filtrado[df_filtrado[c_clust].astype(str).isin(f_clust)]
