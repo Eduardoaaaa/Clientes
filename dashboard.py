@@ -12,8 +12,28 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 # 1. Configuração da página
 st.set_page_config(page_title="Painel ABS Distribuidora", layout="wide", page_icon="📊")
 
-# 2. Conexão com o Banco de Dados (Usando Cofre Seguro do Streamlit Cloud)
+# 2. Conexão com o Banco de Dados
 SUPABASE_DB_URL = st.secrets["SUPABASE_DB_URL"]
+
+# ---> NOVA FUNÇÃO: Limpeza à prova de falhas <---
+def limpar_colunas_tarefas(df):
+    if df.empty:
+        return df
+        
+    for col in df.columns:
+        col_lower = str(col).strip().lower()
+        
+        # Formata a Data independentemente de ter espaços ocultos no nome
+        if col_lower in ['data visita', 'data_visita']:
+            df[col] = pd.to_datetime(df[col], errors='coerce').dt.strftime('%d/%m/%Y').fillna('-')
+            
+        # Remove os '.0' de todas as colunas numéricas (Setor, GV e Quantidades)
+        elif col_lower in ['setor', 'gv', 'qtd solicitada', 'qtd já comprada', 'qtd_solicitada', 'qtd_comprada']:
+            # O str(x) garante que células vazias (NaN) não quebram o código
+            df[col] = df[col].apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
+            df[col] = df[col].replace(['nan', 'None', 'NaN', 'NaT'], '-')
+            
+    return df
 
 @st.cache_data(ttl=300)
 def buscar_dados_cliente(codigo):
@@ -28,10 +48,8 @@ def buscar_dados_cliente(codigo):
         query_tarefas = f"SELECT * FROM tarefas_clientes WHERE CAST(codigo_cliente AS TEXT) = '{codigo}'"
         try:
             df_tarefas = pd.read_sql(query_tarefas, engine)
-            if 'Data Visita' in df_tarefas.columns:
-                df_tarefas['Data Visita'] = pd.to_datetime(df_tarefas['Data Visita'], errors='coerce').dt.strftime('%d/%m/%Y')
-            if 'Setor' in df_tarefas.columns:
-                df_tarefas['Setor'] = df_tarefas['Setor'].astype(str).apply(lambda x: x[:-2] if x.endswith('.0') else x)
+            # Aplica a limpeza segura aqui também
+            df_tarefas = limpar_colunas_tarefas(df_tarefas)
         except:
             df_tarefas = pd.DataFrame()
             
@@ -68,15 +86,10 @@ def buscar_todas_tarefas():
     try:
         engine = create_engine(SUPABASE_DB_URL)
         df_todas = pd.read_sql("SELECT * FROM tarefas_clientes", engine)
-        
-        if 'Data Visita' in df_todas.columns:
-            df_todas['Data Visita'] = pd.to_datetime(df_todas['Data Visita'], errors='coerce').dt.strftime('%d/%m/%Y')
-        if 'Setor' in df_todas.columns:
-            df_todas['Setor'] = df_todas['Setor'].astype(str).apply(lambda x: x[:-2] if x.endswith('.0') else x)
-            
+        # Aplica a limpeza segura na tabela global
+        df_todas = limpar_colunas_tarefas(df_todas)
         return df_todas
     except Exception as e:
-        # Erro visível caso a base de tarefas falhe!
         st.error(f"⚠️ Erro ao buscar a tabela global de tarefas: {e}")
         return pd.DataFrame()
 
@@ -126,10 +139,12 @@ def gerar_pdf_formatado(df):
         
     total_width = 800
     col_widths = []
+    # Usando o nome da coluna limpo para garantir que não falha na criação do PDF
     for col in df.columns:
-        if col == 'Texto da Tarefa':
+        c_name = str(col).strip().lower()
+        if c_name in ['texto da tarefa', 'texto_da_tarefa']:
             col_widths.append(total_width * 0.35)
-        elif col in ['QTD Solicitada', 'QTD Já Comprada', 'GV', 'Setor']:
+        elif c_name in ['qtd solicitada', 'qtd já comprada', 'gv', 'setor', 'mês/ ano', 'operação']:
             col_widths.append(total_width * 0.05)
         else:
             col_widths.append(total_width * 0.08)
