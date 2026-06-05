@@ -15,24 +15,29 @@ st.set_page_config(page_title="Painel ABS Distribuidora", layout="wide", page_ic
 # 2. Conexão com o Banco de Dados
 SUPABASE_DB_URL = st.secrets["SUPABASE_DB_URL"]
 
-# ---> NOVA FUNÇÃO: Limpeza à prova de falhas <---
+# ---> NOVA FUNÇÃO: Busca a hora real em que o script rodou na sua máquina <---
+@st.cache_data(ttl=60) # Atualiza de minuto a minuto para ser rápido a mostrar mudanças
+def buscar_data_atualizacao(tabela):
+    try:
+        engine = create_engine(SUPABASE_DB_URL)
+        df = pd.read_sql(f"SELECT data_atualizacao FROM log_atualizacoes WHERE tabela = '{tabela}'", engine)
+        if not df.empty:
+            ultima_data = df['data_atualizacao'].max()
+            return pd.to_datetime(ultima_data).strftime('%d/%m/%Y às %H:%M')
+        return "Aguardando envio..."
+    except:
+        return "Aguardando envio..."
+
 def limpar_colunas_tarefas(df):
     if df.empty:
         return df
-        
     for col in df.columns:
         col_lower = str(col).strip().lower()
-        
-        # Formata a Data independentemente de ter espaços ocultos no nome
         if col_lower in ['data visita', 'data_visita']:
             df[col] = pd.to_datetime(df[col], errors='coerce').dt.strftime('%d/%m/%Y').fillna('-')
-            
-        # Remove os '.0' de todas as colunas numéricas (Setor, GV e Quantidades)
         elif col_lower in ['setor', 'gv', 'qtd solicitada', 'qtd já comprada', 'qtd_solicitada', 'qtd_comprada']:
-            # O str(x) garante que células vazias (NaN) não quebram o código
             df[col] = df[col].apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
             df[col] = df[col].replace(['nan', 'None', 'NaN', 'NaT'], '-')
-            
     return df
 
 @st.cache_data(ttl=300)
@@ -48,7 +53,6 @@ def buscar_dados_cliente(codigo):
         query_tarefas = f"SELECT * FROM tarefas_clientes WHERE CAST(codigo_cliente AS TEXT) = '{codigo}'"
         try:
             df_tarefas = pd.read_sql(query_tarefas, engine)
-            # Aplica a limpeza segura aqui também
             df_tarefas = limpar_colunas_tarefas(df_tarefas)
         except:
             df_tarefas = pd.DataFrame()
@@ -86,7 +90,6 @@ def buscar_todas_tarefas():
     try:
         engine = create_engine(SUPABASE_DB_URL)
         df_todas = pd.read_sql("SELECT * FROM tarefas_clientes", engine)
-        # Aplica a limpeza segura na tabela global
         df_todas = limpar_colunas_tarefas(df_todas)
         return df_todas
     except Exception as e:
@@ -114,18 +117,8 @@ def gerar_pdf_formatado(df):
     
     styles = getSampleStyleSheet()
     
-    style_normal = ParagraphStyle(
-        'TabelaNormal',
-        parent=styles['Normal'],
-        fontSize=7
-    )
-    
-    style_header = ParagraphStyle(
-        'TabelaHeader',
-        parent=styles['Normal'],
-        fontSize=8,
-        alignment=1
-    )
+    style_normal = ParagraphStyle('TabelaNormal', parent=styles['Normal'], fontSize=7)
+    style_header = ParagraphStyle('TabelaHeader', parent=styles['Normal'], fontSize=8, alignment=1)
     
     headers = [Paragraph(f"<font color='white'><b>{c}</b></font>", style_header) for c in df.columns]
     data = [headers]
@@ -139,7 +132,6 @@ def gerar_pdf_formatado(df):
         
     total_width = 800
     col_widths = []
-    # Usando o nome da coluna limpo para garantir que não falha na criação do PDF
     for col in df.columns:
         c_name = str(col).strip().lower()
         if c_name in ['texto da tarefa', 'texto_da_tarefa']:
@@ -204,10 +196,12 @@ else:
 # =====================================================================
 if menu == "🎯 Visão Macro (Distribuidora)":
     st.title("🎯 Visão Macro - ABS Distribuidora")
-    st.markdown(f"Acompanhamento global configurado para a análise de **{opcao_metrica}**.")
-
+    
     with st.spinner('A carregar base consolidada da nuvem...'):
         df_macro = buscar_dados_macro()
+        
+    st.markdown(f"Acompanhamento global configurado para a análise de **{opcao_metrica}**.")
+    st.caption(f"🔄 Nuvem atualizada com Vendas em: **{buscar_data_atualizacao('vendas')}**")
 
     if not df_macro.empty:
         st.write("---")
@@ -296,6 +290,7 @@ elif menu == "👤 Visão Micro (Por Cliente)":
             nome_cliente = df_cliente['nome_cliente'].iloc[0]
             
             st.subheader(f"👤 Cliente: {codigo_input} - {nome_cliente}")
+            st.caption(f"🔄 Dados em Nuvem -> Vendas: **{buscar_data_atualizacao('vendas')}** | Tarefas: **{buscar_data_atualizacao('tarefas')}**")
             
             tab_resumo, tab_tarefas = st.tabs(["📊 Resumo Financeiro e Mix", "📋 Planificador do Cliente"])
             
@@ -488,11 +483,13 @@ elif menu == "👤 Visão Micro (Por Cliente)":
 # =====================================================================
 elif menu == "📋 Planificador de Tarefas":
     st.title("📋 Planificador Global de Tarefas")
-    st.markdown("Visão completa de execução e missões com filtros ativos da base de dados.")
-
+    
     with st.spinner("A carregar base de tarefas global..."):
         df_todas_tarefas = buscar_todas_tarefas()
         
+    st.markdown("Visão completa de execução e missões com filtros ativos da base de dados.")
+    st.caption(f"🔄 Nuvem atualizada com Tarefas em: **{buscar_data_atualizacao('tarefas')}**")
+
     if not df_todas_tarefas.empty:
         def obter_coluna(df, possiveis_nomes):
             for n in possiveis_nomes:
