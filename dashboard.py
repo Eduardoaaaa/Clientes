@@ -3,6 +3,7 @@ import pandas as pd
 from sqlalchemy import create_engine
 import plotly.express as px
 import io 
+from datetime import datetime, timedelta, timezone 
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, A4
@@ -15,8 +16,9 @@ st.set_page_config(page_title="Painel ABS Distribuidora", layout="wide", page_ic
 # 2. Conexão com o Banco de Dados
 SUPABASE_DB_URL = st.secrets["SUPABASE_DB_URL"]
 
-# ---> NOVA FUNÇÃO: Busca a hora real em que o script rodou na sua máquina <---
-@st.cache_data(ttl=60) # Atualiza de minuto a minuto para ser rápido a mostrar mudanças
+FUSO_BR = timezone(timedelta(hours=-3))
+
+@st.cache_data(ttl=60) 
 def buscar_data_atualizacao(tabela):
     try:
         engine = create_engine(SUPABASE_DB_URL)
@@ -497,36 +499,46 @@ elif menu == "📋 Planificador de Tarefas":
                     return n
             return None
             
+        c_cliente = obter_coluna(df_todas_tarefas, ['codigo_cliente', 'codigo cliente', 'cliente'])
         c_cat = obter_coluna(df_todas_tarefas, ['Categoria', 'categoria'])
         c_clust = obter_coluna(df_todas_tarefas, ['Cluster Primário', 'Cluster Primario', 'cluster_primario'])
         c_setor = obter_coluna(df_todas_tarefas, ['Setor', 'setor'])
         c_data_visita = obter_coluna(df_todas_tarefas, ['Data Visita', 'Data_Visita', 'data_visita'])
 
         with st.expander("🔍 Filtros de Segmentação e Rota", expanded=True):
-            col1, col2, col3, col4 = st.columns(4)
+            # ---> ADICIONADO: Agora temos 5 colunas para acomodar o filtro de Cliente <---
+            col1, col2, col3, col4, col5 = st.columns(5)
             
             with col1:
+                if c_cliente:
+                    opt = sorted(df_todas_tarefas[c_cliente].dropna().astype(str).unique())
+                    f_cliente = st.multiselect("Código Cliente", opt)
+                else: f_cliente = []
+            with col2:
                 if c_cat:
                     opt = sorted(df_todas_tarefas[c_cat].dropna().astype(str).unique())
                     f_cat = st.multiselect("Categoria", opt)
                 else: f_cat = []
-            with col2:
+            with col3:
                 if c_clust:
                     opt = sorted(df_todas_tarefas[c_clust].dropna().astype(str).unique())
                     f_clust = st.multiselect("Cluster Primário", opt)
                 else: f_clust = []
-            with col3:
+            with col4:
                 if c_setor:
                     opt = sorted(df_todas_tarefas[c_setor].dropna().astype(str).unique())
                     f_setor = st.multiselect("Setor", opt)
                 else: f_setor = []
-            with col4:
+            with col5:
                 if c_data_visita:
                     opt = sorted(df_todas_tarefas[c_data_visita].dropna().astype(str).unique())
                     f_data_visita = st.multiselect("Data Visita", opt)
                 else: f_data_visita = []
 
         df_filtrado = df_todas_tarefas.copy()
+        
+        # Aplica o filtro de Cliente
+        if f_cliente and c_cliente: df_filtrado = df_filtrado[df_filtrado[c_cliente].astype(str).isin(f_cliente)]
         if f_cat and c_cat: df_filtrado = df_filtrado[df_filtrado[c_cat].astype(str).isin(f_cat)]
         if f_clust and c_clust: df_filtrado = df_filtrado[df_filtrado[c_clust].astype(str).isin(f_clust)]
         if f_setor and c_setor: df_filtrado = df_filtrado[df_filtrado[c_setor].astype(str).isin(f_setor)]
