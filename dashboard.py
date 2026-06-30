@@ -1,3 +1,12 @@
+import os
+import sys
+
+# --- BLINDAGEM CONTRA A NUVEM TEIMOSA ---
+try:
+    import sqlalchemy_cockroachdb
+except ImportError:
+    os.system(f"{sys.executable} -m pip install sqlalchemy-cockroachdb psycopg2-binary")
+
 import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine
@@ -20,7 +29,7 @@ FUSO_BR = timezone(timedelta(hours=-3))
 @st.cache_data(ttl=60) 
 def buscar_data_atualizacao(tabela):
     try:
-        engine = create_engine(SUPABASE_DB_URL)
+        engine = create_engine(SUPABASE_DB_URL, connect_args={'options': '-c statement_timeout=0'})
         df = pd.read_sql(f"SELECT data_atualizacao FROM log_atualizacoes WHERE tabela = '{tabela}'", engine)
         if not df.empty:
             ultima_data = df['data_atualizacao'].max()
@@ -45,16 +54,25 @@ def limpar_colunas_tarefas(df):
 def buscar_dados_cliente(codigo):
     try:
         engine = create_engine(SUPABASE_DB_URL, connect_args={'options': '-c statement_timeout=0'})
+        
+        # 1. Vendas
         query_vendas = f"SELECT * FROM vendas_consolidadas WHERE CAST(codigo_cliente AS TEXT) = '{codigo}'"
         df_vendas = pd.read_sql(query_vendas, engine)
         
-        query_equip = f"SELECT * FROM equipamentos_clientes WHERE TRIM(CAST(codigo_cliente AS TEXT)) = '{codigo.strip()}'"
-        # Escudo de proteção adicionado aqui!
+        # 2. Equipamentos (Busca TUDO e filtra no Pandas para evitar erros de nome de coluna no SQL)
         try:
-            df_equip = pd.read_sql(query_equip, engine)
+            df_equip_temp = pd.read_sql("SELECT * FROM equipamentos_clientes", engine)
+            # Descobre dinamicamente qual é a coluna do cliente (PDV, codigo_cliente, etc)
+            col_cli = next((c for c in df_equip_temp.columns if str(c).strip().lower() in ['pdv', 'codigo_cliente', 'cliente', 'código']), None)
+            if col_cli:
+                df_equip_temp[col_cli] = df_equip_temp[col_cli].astype(str).str.strip().str.replace('.0', '', regex=False)
+                df_equip = df_equip_temp[df_equip_temp[col_cli] == codigo.strip()]
+            else:
+                df_equip = pd.DataFrame()
         except:
             df_equip = pd.DataFrame()
-        
+            
+        # 3. Tarefas
         query_tarefas = f"SELECT * FROM tarefas_clientes WHERE CAST(codigo_cliente AS TEXT) = '{codigo}'"
         try:
             df_tarefas = pd.read_sql(query_tarefas, engine)
@@ -70,7 +88,7 @@ def buscar_dados_cliente(codigo):
 @st.cache_data(ttl=300)
 def buscar_dados_macro():
     try:
-        engine = create_engine(SUPABASE_DB_URL)
+        engine = create_engine(SUPABASE_DB_URL, connect_args={'options': '-c statement_timeout=0'})
         query = """
             SELECT TO_CHAR(data_venda, 'YYYY-MM') AS "Mes_Ano",
                    nome_cliente,
@@ -93,7 +111,7 @@ def buscar_dados_macro():
 @st.cache_data(ttl=300)
 def buscar_todas_tarefas():
     try:
-        engine = create_engine(SUPABASE_DB_URL)
+        engine = create_engine(SUPABASE_DB_URL, connect_args={'options': '-c statement_timeout=0'})
         df_todas = pd.read_sql("SELECT * FROM tarefas_clientes", engine)
         df_todas = limpar_colunas_tarefas(df_todas)
         return df_todas
@@ -164,7 +182,6 @@ def gerar_pdf_formatado(df):
     doc.build(elements)
     return buffer.getvalue()
 
-# ---> Mês/Ano REMOVIDO e Nome Fantasia adicionado ao lado do Código <---
 colunas_ordem_tarefas = [
     'Data Visita', 'Operação', 'codigo_cliente', 'Nome Fantasia', 'GV', 
     'Setor', 'Cluster Primário', 'Categoria', 'QTD Solicitada', 
@@ -278,7 +295,6 @@ if menu == "🎯 Visão Macro (Distribuidora)":
             fig_cli.update_layout(xaxis=dict(showticklabels=False, showgrid=False), yaxis_title=None, coloraxis_showscale=False, plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0, r=100, t=10, b=0), height=500)
             st.plotly_chart(fig_cli, use_container_width=True, config={'displayModeBar': False})
 
-
 # =====================================================================
 # PÁGINA 2: VISÃO MICRO (POR CLIENTE)
 # =====================================================================
@@ -359,45 +375,69 @@ elif menu == "👤 Visão Micro (Por Cliente)":
 
                 with col_dir:
                     st.markdown("#### 🧊 Giro de Equipamentos")
+                    
                     if not df_equip.empty:
-                        df_equip = df_equip.groupby('tipo_equipamento')['quantidade'].sum().reset_index()
-                        num_meses = (df_filtrado['Mes_Ano'].nunique()) or 1
-                        
-                        for _, row in df_equip.iterrows():
-                            tipo_eq = str(row['tipo_equipamento'])
-                            qtd = int(row['quantidade'])
+                        # Identifica dinamicamente as colunas do seu arquivo
+                        col_tipo = next((c for c in df_equip.columns if str(c).lower().strip() in ['categoria', 'tipo_equipamento']), None)
+                        col_qtd = next((c for c in df_equip.columns if str(c).lower().strip() in ['equipamentos', 'quantidade', 'qtd']), None)
+
+                        if col_tipo and col_qtd:
+                            df_equip[col_tipo] = df_equip[col_tipo].astype(str).str.strip().str.upper()
+                            df_equip[col_qtd] = pd.to_numeric(df_equip[col_qtd], errors='coerce').fillna(0)
                             
-                            if tipo_eq == 'VISA':
-                                meta = 1200 * qtd * num_meses
-                                fat_realizado = df_filtrado[df_filtrado['equipamento'] == 'Visa']['faturamento_reais'].sum()
-                                titulo = f"🥤 {qtd}x VISA (NAB)"
-                            elif tipo_eq == 'SOPI':
-                                meta = 2000 * qtd * num_meses
-                                fat_realizado = df_filtrado[df_filtrado['equipamento'] == 'Sopi']['faturamento_reais'].sum()
-                                titulo = f"🍺 {qtd}x SOPI (Cerveja)"
-                            elif tipo_eq == 'CHOPEIRA':
-                                meta = 3870 * qtd * num_meses
-                                codigos_chopp = ['838', '8037']
-                                fat_realizado = df_filtrado[df_filtrado['codigo_produto'].astype(str).isin(codigos_chopp)]['faturamento_reais'].sum()
-                                titulo = f"🍻 {qtd}x CHOPEIRA (Chopp)"
-                            else:
-                                continue
+                            # Soma os equipamentos do mesmo tipo
+                            df_equip_agrupado = df_equip.groupby(col_tipo)[col_qtd].sum().reset_index()
+                            num_meses = (df_filtrado['Mes_Ano'].nunique()) or 1
+                            encontrou_valido = False
+                            
+                            for _, row in df_equip_agrupado.iterrows():
+                                tipo_eq = row[col_tipo]
+                                qtd = int(row[col_qtd])
                                 
-                            st.write(f"**{titulo}**")
-                            st.caption(f"Meta período: R$ {meta:,.0f}".replace(",", "."))
-                            pct = min(fat_realizado / meta, 1.0) if meta > 0 else 0
-                            st.progress(pct)
-                            
-                            realizado_str = f"R$ {fat_realizado:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                            if fat_realizado >= meta:
-                                st.markdown(f"Realizado: **{realizado_str}**")
-                                st.success("✅ **Meta Atingida!** Equipamento justificado.")
-                            else:
-                                gap = meta - fat_realizado
-                                gap_str = f"R$ {gap:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                                st.markdown(f"Realizado: **{realizado_str}**")
-                                st.error(f"⚠️ **GAP: Faltam {gap_str}**")
-                            st.write("---")
+                                if qtd <= 0: continue
+                                
+                                if 'VISA' in tipo_eq:
+                                    meta = 1200 * qtd * num_meses
+                                    fat_realizado = df_filtrado[df_filtrado['equipamento'].astype(str).str.upper().str.contains('VISA', na=False)]['faturamento_reais'].sum()
+                                    titulo = f"🥤 {qtd}x VISA (NAB)"
+                                    encontrou_valido = True
+                                    
+                                elif 'SOPI' in tipo_eq:
+                                    meta = 2000 * qtd * num_meses
+                                    fat_realizado = df_filtrado[df_filtrado['equipamento'].astype(str).str.upper().str.contains('SOPI', na=False)]['faturamento_reais'].sum()
+                                    titulo = f"🍺 {qtd}x SOPI (Cerveja)"
+                                    encontrou_valido = True
+                                    
+                                elif 'CHOP' in tipo_eq:
+                                    meta = 3870 * qtd * num_meses
+                                    codigos_chopp = ['838', '8037']
+                                    fat_realizado = df_filtrado[df_filtrado['codigo_produto'].astype(str).isin(codigos_chopp)]['faturamento_reais'].sum()
+                                    titulo = f"🍻 {qtd}x CHOPEIRA (Chopp)"
+                                    encontrou_valido = True
+                                    
+                                else:
+                                    continue
+                                    
+                                st.write(f"**{titulo}**")
+                                st.caption(f"Meta período: R$ {meta:,.0f}".replace(",", "."))
+                                pct = min(fat_realizado / meta, 1.0) if meta > 0 else 0
+                                st.progress(pct)
+                                
+                                realizado_str = f"R$ {fat_realizado:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                                if fat_realizado >= meta:
+                                    st.markdown(f"Realizado: **{realizado_str}**")
+                                    st.success("✅ **Meta Atingida!**")
+                                else:
+                                    gap = meta - fat_realizado
+                                    gap_str = f"R$ {gap:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                                    st.markdown(f"Realizado: **{realizado_str}**")
+                                    st.error(f"⚠️ **GAP: Faltam {gap_str}**")
+                                st.write("---")
+                                
+                            if not encontrou_valido:
+                                st.info("✅ Equipamentos registados, mas sem meta parametrizada (não são Visa, Sopi ou Chopeira).")
+                        else:
+                            st.info("⚠️ Colunas 'Categoria' e 'Equipamentos' não encontradas na base.")
                     else:
                         st.info("✅ Cliente sem equipamentos comodatados na base.")
 
@@ -484,7 +524,6 @@ elif menu == "👤 Visão Micro (Por Cliente)":
     else:
         st.info("👋 Bem-vindo! Utilize o campo acima para buscar as informações de um cliente pelo código.")
 
-
 # =====================================================================
 # PÁGINA 3: PLANIFICADOR GLOBAL (A TABELA COM FILTROS DA SUA IMAGEM)
 # =====================================================================
@@ -515,30 +554,24 @@ elif menu == "📋 Planificador de Tarefas":
             col1, col2, col3, col4, col5 = st.columns(5)
             
             with col1:
-                if c_cliente:
-                    opt = sorted(df_todas_tarefas[c_cliente].dropna().astype(str).unique())
-                    f_cliente = st.multiselect("Código Cliente", opt)
-                else: f_cliente = []
+                opt_cli = sorted(df_todas_tarefas[c_cliente].dropna().astype(str).unique()) if c_cliente else []
+                f_cliente = st.multiselect("Código Cliente", opt_cli)
+                
             with col2:
-                if c_cat:
-                    opt = sorted(df_todas_tarefas[c_cat].dropna().astype(str).unique())
-                    f_cat = st.multiselect("Categoria", opt)
-                else: f_cat = []
+                opt_cat = sorted(df_todas_tarefas[c_cat].dropna().astype(str).unique()) if c_cat else []
+                f_cat = st.multiselect("Categoria", opt_cat)
+                
             with col3:
-                if c_clust:
-                    opt = sorted(df_todas_tarefas[c_clust].dropna().astype(str).unique())
-                    f_clust = st.multiselect("Cluster Primário", opt)
-                else: f_clust = []
+                opt_clust = sorted(df_todas_tarefas[c_clust].dropna().astype(str).unique()) if c_clust else []
+                f_clust = st.multiselect("Cluster Primário", opt_clust)
+                
             with col4:
-                if c_setor:
-                    opt = sorted(df_todas_tarefas[c_setor].dropna().astype(str).unique())
-                    f_setor = st.multiselect("Setor", opt)
-                else: f_setor = []
+                opt_setor = sorted(df_todas_tarefas[c_setor].dropna().astype(str).unique()) if c_setor else []
+                f_setor = st.multiselect("Setor", opt_setor)
+                
             with col5:
-                if c_data_visita:
-                    opt = sorted(df_todas_tarefas[c_data_visita].dropna().astype(str).unique())
-                    f_data_visita = st.multiselect("Data Visita", opt)
-                else: f_data_visita = []
+                opt_data = sorted(df_todas_tarefas[c_data_visita].dropna().astype(str).unique()) if c_data_visita else []
+                f_data_visita = st.multiselect("Data Visita", opt_data)
 
         df_filtrado = df_todas_tarefas.copy()
         
