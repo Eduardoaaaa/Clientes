@@ -44,12 +44,16 @@ def limpar_colunas_tarefas(df):
 @st.cache_data(ttl=300)
 def buscar_dados_cliente(codigo):
     try:
-        engine = create_engine(SUPABASE_DB_URL)
+        engine = create_engine(SUPABASE_DB_URL, connect_args={'options': '-c statement_timeout=0'})
         query_vendas = f"SELECT * FROM vendas_consolidadas WHERE CAST(codigo_cliente AS TEXT) = '{codigo}'"
         df_vendas = pd.read_sql(query_vendas, engine)
         
         query_equip = f"SELECT * FROM equipamentos_clientes WHERE TRIM(CAST(codigo_cliente AS TEXT)) = '{codigo.strip()}'"
-        df_equip = pd.read_sql(query_equip, engine)
+        # Escudo de proteção adicionado aqui!
+        try:
+            df_equip = pd.read_sql(query_equip, engine)
+        except:
+            df_equip = pd.DataFrame()
         
         query_tarefas = f"SELECT * FROM tarefas_clientes WHERE CAST(codigo_cliente AS TEXT) = '{codigo}'"
         try:
