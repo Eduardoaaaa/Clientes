@@ -1,7 +1,9 @@
 streamlit
 pandas
-sqlalchemy
-psycopg2-binary
 plotly
+SQLAlchemy
+sqlalchemy-cockroachdb
+psycopg2-binary
+openpyxl
 xlsxwriter
 reportlab
