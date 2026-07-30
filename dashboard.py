@@ -1,12 +1,5 @@
 import os
 import sys
-
-# --- BLINDAGEM CONTRA A NUVEM TEIMOSA ---
-try:
-    import sqlalchemy_cockroachdb
-except ImportError:
-    os.system(f"{sys.executable} -m pip install sqlalchemy-cockroachdb psycopg2-binary")
-
 import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine
@@ -22,7 +15,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 # 1. Configuração da página
 st.set_page_config(page_title="Painel ABS Distribuidora", layout="wide", page_icon="📊")
 
-# 2. Conexão com o Banco de Dados
+# 2. Conexão com o Banco de Dados (Agora no Xata ou Postgres nativo)
 SUPABASE_DB_URL = st.secrets["SUPABASE_DB_URL"]
 FUSO_BR = timezone(timedelta(hours=-3))
 
@@ -377,7 +370,6 @@ elif menu == "👤 Visão Micro (Por Cliente)":
                     st.markdown("#### 🧊 Giro de Equipamentos")
                     
                     if not df_equip.empty:
-                        # Identifica dinamicamente as colunas do seu arquivo
                         col_tipo = next((c for c in df_equip.columns if str(c).lower().strip() in ['categoria', 'tipo_equipamento']), None)
                         col_qtd = next((c for c in df_equip.columns if str(c).lower().strip() in ['equipamentos', 'quantidade', 'qtd']), None)
 
@@ -385,7 +377,6 @@ elif menu == "👤 Visão Micro (Por Cliente)":
                             df_equip[col_tipo] = df_equip[col_tipo].astype(str).str.strip().str.upper()
                             df_equip[col_qtd] = pd.to_numeric(df_equip[col_qtd], errors='coerce').fillna(0)
                             
-                            # Soma os equipamentos do mesmo tipo
                             df_equip_agrupado = df_equip.groupby(col_tipo)[col_qtd].sum().reset_index()
                             num_meses = (df_filtrado['Mes_Ano'].nunique()) or 1
                             encontrou_valido = False
