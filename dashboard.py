@@ -347,8 +347,8 @@ elif menu == "👤 Visão Micro (Por Cliente)":
 
                 c1, c2, c3 = st.columns(3)
                 c1.metric(label_kpi, f"{prefixo_unidade}{valor_kpi_micro:{formato_num}}".replace(",", "X").replace(".", ",").replace("X", ".") + sufixo_unidade)
-                c2.metric("Volume Físico", f"{total_vol_caixas:,.0f} cx".replace(",", "."))
-                c3.metric("Frequência de Pedidos", f"{dias_compra} dias")
+                #c2.metric("Volume Físico", f"{total_vol_caixas:,.0f} cx".replace(",", "."))
+                #c3.metric("Frequência de Pedidos", f"{dias_compra} dias")
 
                 st.write("---")
                 col_esq, col_dir = st.columns([2, 1])
