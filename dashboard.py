@@ -354,7 +354,7 @@ elif menu == "👤 Visão Micro (Por Cliente)":
                 col_esq, col_dir = st.columns([2, 1])
 
                 with col_esq:
-                    st.markdown(f"#### 📈 Evolução Mensal ({label_kpi})")
+                    st.markdown(f"#### 📈 Evolução Mensal ({label_kpi}) - {nome_cliente}")
                     resumo_grafico = df_filtrado.groupby('Mes_Ano').agg({col_metrica: 'sum'}).reset_index().sort_values('Mes_Ano')
                     
                     if not resumo_grafico.empty:
