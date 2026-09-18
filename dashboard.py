@@ -1,10 +1,8 @@
-import os
-import sys
 import streamlit as st
 import pandas as pd
-from sqlalchemy import create_engine
 import plotly.express as px
-import io 
+import io
+import os
 from datetime import datetime, timedelta, timezone 
 
 from reportlab.lib import colors
@@ -12,28 +10,28 @@ from reportlab.lib.pagesizes import landscape, A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-# 1. Configuração da página
 st.set_page_config(page_title="Painel ABS Distribuidora", layout="wide", page_icon="📊")
 
-# 2. Conexão com o Banco de Dados (Agora no Xata ou Postgres nativo)
-SUPABASE_DB_URL = st.secrets["SUPABASE_DB_URL"]
-FUSO_BR = timezone(timedelta(hours=-3))
+@st.cache_data
+def carregar_dados_vendas():
+    if os.path.exists('vendas.parquet'):
+        return pd.read_parquet('vendas.parquet')
+    return pd.DataFrame()
 
-@st.cache_data(ttl=60) 
-def buscar_data_atualizacao(tabela):
-    try:
-        engine = create_engine(SUPABASE_DB_URL, connect_args={'options': '-c statement_timeout=0'})
-        df = pd.read_sql(f"SELECT data_atualizacao FROM log_atualizacoes WHERE tabela = '{tabela}'", engine)
-        if not df.empty:
-            ultima_data = df['data_atualizacao'].max()
-            return pd.to_datetime(ultima_data).strftime('%d/%m/%Y às %H:%M')
-        return "Aguardando envio..."
-    except:
-        return "Aguardando envio..."
+@st.cache_data
+def carregar_dados_equipamentos():
+    if os.path.exists('equipamentos.parquet'):
+        return pd.read_parquet('equipamentos.parquet')
+    return pd.DataFrame()
+
+@st.cache_data
+def carregar_dados_tarefas():
+    if os.path.exists('tarefas.parquet'):
+        return pd.read_parquet('tarefas.parquet')
+    return pd.DataFrame()
 
 def limpar_colunas_tarefas(df):
-    if df.empty:
-        return df
+    if df.empty: return df
     for col in df.columns:
         col_lower = str(col).strip().lower()
         if col_lower in ['data visita', 'data_visita']:
@@ -43,74 +41,33 @@ def limpar_colunas_tarefas(df):
             df[col] = df[col].replace(['nan', 'None', 'NaN', 'NaT'], '-')
     return df
 
-@st.cache_data(ttl=300)
-def buscar_dados_cliente(codigo):
-    try:
-        engine = create_engine(SUPABASE_DB_URL, connect_args={'options': '-c statement_timeout=0'})
-        
-        # 1. Vendas
-        query_vendas = f"SELECT * FROM vendas_consolidadas WHERE CAST(codigo_cliente AS TEXT) = '{codigo}'"
-        df_vendas = pd.read_sql(query_vendas, engine)
-        
-        # 2. Equipamentos (Busca TUDO e filtra no Pandas para evitar erros de nome de coluna no SQL)
-        try:
-            df_equip_temp = pd.read_sql("SELECT * FROM equipamentos_clientes", engine)
-            # Descobre dinamicamente qual é a coluna do cliente (PDV, codigo_cliente, etc)
-            col_cli = next((c for c in df_equip_temp.columns if str(c).strip().lower() in ['pdv', 'codigo_cliente', 'cliente', 'código']), None)
-            if col_cli:
-                df_equip_temp[col_cli] = df_equip_temp[col_cli].astype(str).str.strip().str.replace('.0', '', regex=False)
-                df_equip = df_equip_temp[df_equip_temp[col_cli] == codigo.strip()]
-            else:
-                df_equip = pd.DataFrame()
-        except:
-            df_equip = pd.DataFrame()
-            
-        # 3. Tarefas
-        query_tarefas = f"SELECT * FROM tarefas_clientes WHERE CAST(codigo_cliente AS TEXT) = '{codigo}'"
-        try:
-            df_tarefas = pd.read_sql(query_tarefas, engine)
-            df_tarefas = limpar_colunas_tarefas(df_tarefas)
-        except:
-            df_tarefas = pd.DataFrame()
-            
-        return df_vendas, df_equip, df_tarefas
-    except Exception as e:
-        st.error(f"Erro ao ligar à base de dados: {e}")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
-@st.cache_data(ttl=300)
+@st.cache_data
 def buscar_dados_macro():
-    try:
-        engine = create_engine(SUPABASE_DB_URL, connect_args={'options': '-c statement_timeout=0'})
-        query = """
-            SELECT TO_CHAR(data_venda, 'YYYY-MM') AS "Mes_Ano",
-                   nome_cliente,
-                   nome_produto,
-                   codigo_produto,
-                   categoria_produto,
-                   equipamento,
-                   SUM(faturamento_reais) AS faturamento_reais,
-                   SUM(volume_hl) AS volume_hl,
-                   SUM(volume_caixas) AS volume_caixas
-            FROM vendas_consolidadas
-            GROUP BY TO_CHAR(data_venda, 'YYYY-MM'), nome_cliente, nome_produto, codigo_produto, categoria_produto, equipamento
-        """
-        df_macro = pd.read_sql(query, engine)
-        return df_macro
-    except Exception as e:
-        st.error(f"Erro ao carregar dados macro: {e}")
-        return pd.DataFrame()
+    df_vendas = carregar_dados_vendas()
+    if df_vendas.empty: return df_vendas
+    
+    df_vendas['Mes_Ano'] = pd.to_datetime(df_vendas['data_venda']).dt.strftime('%Y-%m')
+    df_macro = df_vendas.groupby(
+        ['Mes_Ano', 'nome_cliente', 'nome_produto', 'codigo_produto', 'categoria_produto', 'equipamento'], 
+        as_index=False
+    )[['faturamento_reais', 'volume_hl', 'volume_caixas']].sum()
+    return df_macro
 
-@st.cache_data(ttl=300)
-def buscar_todas_tarefas():
-    try:
-        engine = create_engine(SUPABASE_DB_URL, connect_args={'options': '-c statement_timeout=0'})
-        df_todas = pd.read_sql("SELECT * FROM tarefas_clientes", engine)
-        df_todas = limpar_colunas_tarefas(df_todas)
-        return df_todas
-    except Exception as e:
-        st.error(f"⚠️ Erro ao buscar a tabela global de tarefas: {e}")
-        return pd.DataFrame()
+@st.cache_data
+def buscar_dados_cliente(codigo):
+    df_v = carregar_dados_vendas()
+    df_e = carregar_dados_equipamentos()
+    df_t = carregar_dados_tarefas()
+    
+    codigo_str = str(codigo).strip()
+    
+    df_v_cli = df_v[df_v['codigo_cliente'].astype(str) == codigo_str] if not df_v.empty else pd.DataFrame()
+    df_e_cli = df_e[df_e['codigo_cliente'].astype(str) == codigo_str] if not df_e.empty else pd.DataFrame()
+    
+    df_t_cli = df_t[df_t['codigo_cliente'].astype(str) == codigo_str] if not df_t.empty else pd.DataFrame()
+    df_t_cli = limpar_colunas_tarefas(df_t_cli)
+    
+    return df_v_cli, df_e_cli, df_t_cli
 
 def gerar_excel_formatado(df):
     output = io.BytesIO()
@@ -122,22 +79,19 @@ def gerar_excel_formatado(df):
         if num_rows > 0 and num_cols > 0:
             col_settings = [{'header': str(c)} for c in df.columns]
             worksheet.add_table(0, 0, num_rows, num_cols - 1, {'columns': col_settings, 'style': 'Table Style Medium 9'})
-            for i in range(num_cols):
-                worksheet.set_column(i, i, 20)
+            for i in range(num_cols): worksheet.set_column(i, i, 20)
     return output.getvalue()
 
 def gerar_pdf_formatado(df):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     elements = []
-    
     styles = getSampleStyleSheet()
     style_normal = ParagraphStyle('TabelaNormal', parent=styles['Normal'], fontSize=7)
     style_header = ParagraphStyle('TabelaHeader', parent=styles['Normal'], fontSize=8, alignment=1)
     
     headers = [Paragraph(f"<font color='white'><b>{c}</b></font>", style_header) for c in df.columns]
     data = [headers]
-    
     for _, row in df.iterrows():
         linha_formatada = []
         for item in row:
@@ -149,14 +103,10 @@ def gerar_pdf_formatado(df):
     col_widths = []
     for col in df.columns:
         c_name = str(col).strip().lower()
-        if c_name in ['texto da tarefa', 'texto_da_tarefa']:
-            col_widths.append(total_width * 0.35)
-        elif c_name in ['nome fantasia', 'nome_fantasia']:
-            col_widths.append(total_width * 0.15)
-        elif c_name in ['qtd solicitada', 'qtd já comprada', 'gv', 'setor', 'operação']:
-            col_widths.append(total_width * 0.05)
-        else:
-            col_widths.append(total_width * 0.08)
+        if c_name in ['texto da tarefa', 'texto_da_tarefa']: col_widths.append(total_width * 0.35)
+        elif c_name in ['nome fantasia', 'nome_fantasia']: col_widths.append(total_width * 0.15)
+        elif c_name in ['qtd solicitada', 'qtd já comprada', 'gv', 'setor', 'operação']: col_widths.append(total_width * 0.05)
+        else: col_widths.append(total_width * 0.08)
             
     factor = total_width / sum(col_widths)
     col_widths = [w * factor for w in col_widths]
@@ -170,7 +120,6 @@ def gerar_pdf_formatado(df):
         ('BOX', (0, 0), (-1, -1), 0.25, colors.black),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.whitesmoke, colors.white])
     ]))
-    
     elements.append(t)
     doc.build(elements)
     return buffer.getvalue()
@@ -181,119 +130,75 @@ colunas_ordem_tarefas = [
     'QTD Já Comprada', 'Texto da Tarefa'
 ]
 
-# --- MENU LATERAL DE NAVEGAÇÃO E CONFIGURAÇÃO ---
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/2666/2666505.png", width=120)
 st.sidebar.markdown("## Menu de Navegação")
-
-menu = st.sidebar.radio(
-    "Selecione o nível de análise:",
-    ["🎯 Visão Macro (Distribuidora)", "👤 Visão Micro (Por Cliente)", "📋 Planificador de Tarefas"]
-)
-
+menu = st.sidebar.radio("Selecione o nível de análise:", ["🎯 Visão Macro (Distribuidora)", "👤 Visão Micro (Por Cliente)", "📋 Planificador de Tarefas"])
 st.sidebar.markdown("---")
-st.sidebar.markdown("## Configurações de Visualização")
-
 opcao_metrica = st.sidebar.radio("Visualizar dados por:", ["Faturamento (R$)", "Volume (HL)"])
 
 if opcao_metrica == "Faturamento (R$)":
     col_metrica = "faturamento_reais"
-    prefixo_unidade = "R$ "
-    sufixo_unidade = ""
-    formato_num = ",.2f"
-    label_kpi = "Faturamento"
+    prefixo_unidade, sufixo_unidade, label_kpi = "R$ ", "", "Faturamento"
 else:
     col_metrica = "volume_hl"
-    prefixo_unidade = ""
-    sufixo_unidade = " HL"
-    formato_num = ",.2f"
-    label_kpi = "Volume"
+    prefixo_unidade, sufixo_unidade, label_kpi = "", " HL", "Volume"
+formato_num = ",.2f"
 
-# =====================================================================
-# PÁGINA 1: VISÃO MACRO (GERAL)
-# =====================================================================
+# ==================== PÁGINA 1 ====================
 if menu == "🎯 Visão Macro (Distribuidora)":
     st.title("🎯 Visão Macro - ABS Distribuidora")
     
-    with st.spinner('A carregar base consolidada da nuvem...'):
+    with st.spinner('A carregar ficheiros locais...'):
         df_macro = buscar_dados_macro()
         
     st.markdown(f"Acompanhamento global configurado para a análise de **{opcao_metrica}**.")
-    st.caption(f"🔄 Nuvem atualizada com Vendas em: **{buscar_data_atualizacao('vendas')}**")
 
     if not df_macro.empty:
         st.write("---")
-        st.markdown("### 📅 Selecione o Período de Análise")
-        
         meses_disponiveis = sorted(df_macro['Mes_Ano'].dropna().unique())
-        mes_inicio, mes_fim = st.select_slider(
-            "Arraste as extremidades para definir o intervalo:",
-            options=meses_disponiveis,
-            value=(meses_disponiveis[0], meses_disponiveis[-1]),
-            label_visibility="collapsed",
-            key="slider_macro"
-        )
-        
+        mes_inicio, mes_fim = st.select_slider("Período:", options=meses_disponiveis, value=(meses_disponiveis[0], meses_disponiveis[-1]), label_visibility="collapsed")
         df_filtrado_macro = df_macro[(df_macro['Mes_Ano'] >= mes_inicio) & (df_macro['Mes_Ano'] <= mes_fim)]
 
-        st.write("---")
-        st.markdown("### 🔍 Filtro de Categoria")
         categorias_disp = sorted(df_filtrado_macro['categoria_produto'].dropna().unique().tolist())
-        col_filtro, _ = st.columns([1, 2])
-        with col_filtro:
-            cat_selecionadas = st.multiselect("Filtrar por Categoria:", options=categorias_disp, default=categorias_disp, key="cat_macro")
-        
-        if cat_selecionadas:
-            df_filtrado_macro = df_filtrado_macro[df_filtrado_macro['categoria_produto'].isin(cat_selecionadas)]
-
-        st.write("")
-        valor_global = df_filtrado_macro[col_metrica].sum()
-        total_clientes = df_filtrado_macro['nome_cliente'].nunique()
+        cat_selecionadas = st.multiselect("Filtrar por Categoria:", options=categorias_disp, default=categorias_disp)
+        if cat_selecionadas: df_filtrado_macro = df_filtrado_macro[df_filtrado_macro['categoria_produto'].isin(cat_selecionadas)]
 
         c1, c2 = st.columns(2)
-        c1.metric(f"{label_kpi} Global", f"{prefixo_unidade}{valor_global:{formato_num}}".replace(",", "X").replace(".", ",").replace("X", ".") + sufixo_unidade)
-        c2.metric("Clientes Positivados", f"{total_clientes}")
+        c1.metric(f"{label_kpi} Global", f"{prefixo_unidade}{df_filtrado_macro[col_metrica].sum():{formato_num}}".replace(",", "X").replace(".", ",").replace("X", ".") + sufixo_unidade)
+        c2.metric("Clientes Positivados", f"{df_filtrado_macro['nome_cliente'].nunique()}")
 
-        st.write("---")
         col_esq, col_dir = st.columns([2, 1])
-
         with col_esq:
-            st.markdown(f"#### 📈 Evolução Mensal de {label_kpi}")
-            df_evo = df_filtrado_macro.groupby('Mes_Ano')[col_metrica].sum().reset_index().sort_values('Mes_Ano')
+            st.markdown(f"#### 📈 Evolução Mensal")
+            df_evo = df_filtrado_macro.groupby('Mes_Ano')[col_metrica].sum().reset_index()
             if not df_evo.empty:
                 df_evo['Rotulo'] = df_evo[col_metrica].apply(lambda x: f"{prefixo_unidade}{x:{formato_num}}".replace(",", "X").replace(".", ",").replace("X", ".") + sufixo_unidade)
                 fig_evo = px.bar(df_evo, x='Mes_Ano', y=col_metrica, text='Rotulo')
-                fig_evo.update_traces(textposition='outside', textfont_size=14, marker_color="#004A99", cliponaxis=False)
-                fig_evo.update_layout(plot_bgcolor='rgba(0,0,0,0)', xaxis_title=None, yaxis_title=None, margin=dict(t=30), xaxis=dict(type='category'))
+                fig_evo.update_traces(textposition='outside', marker_color="#004A99", cliponaxis=False)
+                fig_evo.update_layout(plot_bgcolor='rgba(0,0,0,0)', xaxis_title=None, yaxis_title=None)
                 st.plotly_chart(fig_evo, use_container_width=True)
 
         with col_dir:
-            st.markdown(f"#### 🍕 Mix de Categorias ({label_kpi})")
-            df_mix_cat = df_filtrado_macro.groupby('categoria_produto')[col_metrica].sum().reset_index()
-            if not df_mix_cat.empty:
-                fig_mix = px.pie(df_mix_cat, values=col_metrica, names='categoria_produto', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-                st.plotly_chart(fig_mix, use_container_width=True)
+            st.markdown(f"#### 🍕 Mix de Categorias")
+            df_mix = df_filtrado_macro.groupby('categoria_produto')[col_metrica].sum().reset_index()
+            if not df_mix.empty:
+                st.plotly_chart(px.pie(df_mix, values=col_metrica, names='categoria_produto', hole=0.4), use_container_width=True)
 
-        st.divider()
-        st.subheader(f"🏆 Top 15 Clientes (Maior {label_kpi})")
-        
-        df_top_cli = df_filtrado_macro.groupby('nome_cliente')[col_metrica].sum().reset_index()
-        df_top_cli = df_top_cli.sort_values(col_metrica, ascending=False).head(15)
-        
-        if not df_top_cli.empty:
-            df_top_cli = df_top_cli.iloc[::-1]
-            df_top_cli['Rotulo'] = df_top_cli[col_metrica].apply(lambda x: f"{prefixo_unidade}{x:{formato_num}}".replace(",", "X").replace(".", ",").replace("X", ".") + sufixo_unidade)
-            
-            fig_cli = px.bar(df_top_cli, x=col_metrica, y='nome_cliente', orientation='h', text='Rotulo', color=col_metrica, color_continuous_scale='Blues')
-            fig_cli.update_traces(textposition='outside', textfont_size=14, cliponaxis=False)
-            fig_cli.update_layout(xaxis=dict(showticklabels=False, showgrid=False), yaxis_title=None, coloraxis_showscale=False, plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0, r=100, t=10, b=0), height=500)
+        st.subheader(f"🏆 Top 15 Clientes")
+        df_top = df_filtrado_macro.groupby('nome_cliente')[col_metrica].sum().reset_index().sort_values(col_metrica, ascending=False).head(15).iloc[::-1]
+        if not df_top.empty:
+            df_top['Rotulo'] = df_top[col_metrica].apply(lambda x: f"{prefixo_unidade}{x:{formato_num}}".replace(",", "X").replace(".", ",").replace("X", ".") + sufixo_unidade)
+            fig_cli = px.bar(df_top, x=col_metrica, y='nome_cliente', orientation='h', text='Rotulo')
+            fig_cli.update_traces(textposition='outside', cliponaxis=False)
+            fig_cli.update_layout(xaxis=dict(showticklabels=False), yaxis_title=None, plot_bgcolor='rgba(0,0,0,0)', height=500)
             st.plotly_chart(fig_cli, use_container_width=True, config={'displayModeBar': False})
+    else:
+        st.warning("Gere o ficheiro vendas.parquet usando o script local.")
 
-# =====================================================================
-# PÁGINA 2: VISÃO MICRO (POR CLIENTE)
-# =====================================================================
+# ==================== PÁGINA 2 ====================
 elif menu == "👤 Visão Micro (Por Cliente)":
     st.title("👤 Portal de Autoatendimento - Cliente")
-    codigo_input = st.text_input("🔎 Digite o Código do Cliente para iniciar:", placeholder="Ex: 9528")
+    codigo_input = st.text_input("🔎 Digite o Código do Cliente:", placeholder="Ex: 9528")
 
     if codigo_input:
         df_cliente, df_equip, df_tarefas = buscar_dados_cliente(codigo_input)
@@ -303,300 +208,116 @@ elif menu == "👤 Visão Micro (Por Cliente)":
         else:
             df_cliente['data_venda'] = pd.to_datetime(df_cliente['data_venda'])
             df_cliente['Mes_Ano'] = df_cliente['data_venda'].dt.to_period('M').astype(str)
-            nome_cliente = df_cliente['nome_cliente'].iloc[0]
-            
-            st.subheader(f"👤 Cliente: {codigo_input} - {nome_cliente}")
-            st.caption(f"🔄 Dados em Nuvem -> Vendas: **{buscar_data_atualizacao('vendas')}** | Tarefas: **{buscar_data_atualizacao('tarefas')}**")
+            st.subheader(f"👤 Cliente: {codigo_input} - {df_cliente['nome_cliente'].iloc[0]}")
             
             tab_resumo, tab_tarefas = st.tabs(["📊 Resumo Financeiro e Mix", "📋 Planificador do Cliente"])
             
             with tab_resumo:
-                st.write("---")
-                st.markdown("### 📅 Selecione o Período de Análise")
                 meses_disponiveis = sorted(df_cliente['Mes_Ano'].unique())
-                
-                if len(meses_disponiveis) > 1:
-                    mes_inicio, mes_fim = st.select_slider(
-                        "Arraste as extremidades para definir o intervalo:",
-                        options=meses_disponiveis,
-                        value=(meses_disponiveis[0], meses_disponiveis[-1]),
-                        label_visibility="collapsed",
-                        key="slider_micro"
-                    )
-                    df_filtrado = df_cliente[(df_cliente['Mes_Ano'] >= mes_inicio) & (df_cliente['Mes_Ano'] <= mes_fim)]
-                else:
-                    st.info(f"Este cliente possui apenas um mês de histórico: {meses_disponiveis[0]}")
-                    df_filtrado = df_cliente
+                mes_inicio, mes_fim = st.select_slider("Período:", options=meses_disponiveis, value=(meses_disponiveis[0], meses_disponiveis[-1]), label_visibility="collapsed")
+                df_filtrado = df_cliente[(df_cliente['Mes_Ano'] >= mes_inicio) & (df_cliente['Mes_Ano'] <= mes_fim)]
 
-                st.write("---")
-                st.markdown("### 🔍 Filtro de Categoria")
-                categorias_disponiveis = sorted(df_filtrado['categoria_produto'].dropna().unique().tolist())
-                col_filtro, _ = st.columns([1, 2])
-                with col_filtro:
-                    categorias_selecionadas = st.multiselect("Selecione o Tipo de Produto:", options=categorias_disponiveis, default=categorias_disponiveis, key="cat_micro")
-                    
-                if categorias_selecionadas:
-                    df_filtrado = df_filtrado[df_filtrado['categoria_produto'].isin(categorias_selecionadas)]
-                else:
-                    df_filtrado = df_filtrado.copy()
-
-                st.write("")
-                valor_kpi_micro = df_filtrado[col_metrica].sum()
-                total_vol_caixas = df_filtrado['volume_caixas'].sum()
-                dias_compra = df_filtrado['data_venda'].nunique()
+                cat_disp = sorted(df_filtrado['categoria_produto'].dropna().unique().tolist())
+                cat_sel = st.multiselect("Categoria:", options=cat_disp, default=cat_disp)
+                if cat_sel: df_filtrado = df_filtrado[df_filtrado['categoria_produto'].isin(cat_sel)]
 
                 c1, c2, c3 = st.columns(3)
-                c1.metric(label_kpi, f"{prefixo_unidade}{valor_kpi_micro:{formato_num}}".replace(",", "X").replace(".", ",").replace("X", ".") + sufixo_unidade)
-                #c2.metric("Volume Físico", f"{total_vol_caixas:,.0f} cx".replace(",", "."))
-                #c3.metric("Frequência de Pedidos", f"{dias_compra} dias")
+                c1.metric(label_kpi, f"{prefixo_unidade}{df_filtrado[col_metrica].sum():{formato_num}}".replace(",", "X").replace(".", ",").replace("X", ".") + sufixo_unidade)
+                c2.metric("Volume Físico", f"{df_filtrado['volume_caixas'].sum():,.0f} cx".replace(",", "."))
+                c3.metric("Frequência de Pedidos", f"{df_filtrado['data_venda'].nunique()} dias")
 
-                st.write("---")
                 col_esq, col_dir = st.columns([2, 1])
-
                 with col_esq:
-                    st.markdown(f"#### 📈 Evolução Mensal ({label_kpi}) - {nome_cliente} - {prefixo_unidade}{valor_kpi_micro:{formato_num}}")
-                    resumo_grafico = df_filtrado.groupby('Mes_Ano').agg({col_metrica: 'sum'}).reset_index().sort_values('Mes_Ano')
-                    
+                    resumo_grafico = df_filtrado.groupby('Mes_Ano')[col_metrica].sum().reset_index()
                     if not resumo_grafico.empty:
-                        resumo_grafico['Rotulo_Valor'] = resumo_grafico[col_metrica].apply(lambda x: f"{prefixo_unidade}{x:{formato_num}}".replace(",", "X").replace(".", ",").replace("X", ".") + sufixo_unidade)
-                        fig = px.bar(resumo_grafico, x='Mes_Ano', y=col_metrica, text='Rotulo_Valor')
-                        fig.update_traces(textposition='outside', marker_color="#004A99", textfont_size=16, textfont_color="white", cliponaxis=False)
-                        fig.update_layout(xaxis_title=None, yaxis_title=None, plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', margin=dict(t=50, b=0, l=0, r=0), xaxis=dict(type='category', tickangle=0))
+                        resumo_grafico['Rotulo'] = resumo_grafico[col_metrica].apply(lambda x: f"{prefixo_unidade}{x:{formato_num}}".replace(",", "X").replace(".", ",").replace("X", ".") + sufixo_unidade)
+                        fig = px.bar(resumo_grafico, x='Mes_Ano', y=col_metrica, text='Rotulo')
+                        fig.update_traces(textposition='outside', marker_color="#004A99", cliponaxis=False)
+                        fig.update_layout(xaxis_title=None, yaxis_title=None, plot_bgcolor='rgba(0,0,0,0)')
                         st.plotly_chart(fig, use_container_width=True)
-                    else:
-                        st.info("Selecione um período para visualizar.")
 
                 with col_dir:
                     st.markdown("#### 🧊 Giro de Equipamentos")
-                    
                     if not df_equip.empty:
-                        col_tipo = next((c for c in df_equip.columns if str(c).lower().strip() in ['categoria', 'tipo_equipamento']), None)
-                        col_qtd = next((c for c in df_equip.columns if str(c).lower().strip() in ['equipamentos', 'quantidade', 'qtd']), None)
-
-                        if col_tipo and col_qtd:
-                            df_equip[col_tipo] = df_equip[col_tipo].astype(str).str.strip().str.upper()
-                            df_equip[col_qtd] = pd.to_numeric(df_equip[col_qtd], errors='coerce').fillna(0)
-                            
-                            df_equip_agrupado = df_equip.groupby(col_tipo)[col_qtd].sum().reset_index()
-                            num_meses = (df_filtrado['Mes_Ano'].nunique()) or 1
-                            encontrou_valido = False
-                            
-                            for _, row in df_equip_agrupado.iterrows():
-                                tipo_eq = row[col_tipo]
-                                qtd = int(row[col_qtd])
-                                
-                                if qtd <= 0: continue
-                                
-                                if 'VISA' in tipo_eq:
-                                    meta = 1200 * qtd * num_meses
-                                    fat_realizado = df_filtrado[df_filtrado['equipamento'].astype(str).str.upper().str.contains('VISA', na=False)]['faturamento_reais'].sum()
-                                    titulo = f"🥤 {qtd}x VISA (NAB)"
-                                    encontrou_valido = True
-                                    
-                                elif 'SOPI' in tipo_eq:
-                                    meta = 2000 * qtd * num_meses
-                                    fat_realizado = df_filtrado[df_filtrado['equipamento'].astype(str).str.upper().str.contains('SOPI', na=False)]['faturamento_reais'].sum()
-                                    titulo = f"🍺 {qtd}x SOPI (Cerveja)"
-                                    encontrou_valido = True
-                                    
-                                elif 'CHOP' in tipo_eq:
-                                    meta = 3870 * qtd * num_meses
-                                    codigos_chopp = ['838', '8037']
-                                    fat_realizado = df_filtrado[df_filtrado['codigo_produto'].astype(str).isin(codigos_chopp)]['faturamento_reais'].sum()
-                                    titulo = f"🍻 {qtd}x CHOPEIRA (Chopp)"
-                                    encontrou_valido = True
-                                    
-                                else:
-                                    continue
-                                    
-                                st.write(f"**{titulo}**")
-                                st.caption(f"Meta período: R$ {meta:,.0f}".replace(",", "."))
-                                pct = min(fat_realizado / meta, 1.0) if meta > 0 else 0
-                                st.progress(pct)
-                                
-                                realizado_str = f"R$ {fat_realizado:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                                if fat_realizado >= meta:
-                                    st.markdown(f"Realizado: **{realizado_str}**")
-                                    st.success("✅ **Meta Atingida!**")
-                                else:
-                                    gap = meta - fat_realizado
-                                    gap_str = f"R$ {gap:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                                    st.markdown(f"Realizado: **{realizado_str}**")
-                                    st.error(f"⚠️ **GAP: Faltam {gap_str}**")
-                                st.write("---")
-                                
-                            if not encontrou_valido:
-                                st.info("✅ Equipamentos registados, mas sem meta parametrizada (não são Visa, Sopi ou Chopeira).")
-                        else:
-                            st.info("⚠️ Colunas 'Categoria' e 'Equipamentos' não encontradas na base.")
-                    else:
-                        st.info("✅ Cliente sem equipamentos comodatados na base.")
-
-                st.divider()
-                st.subheader("📦 Análise de Volume por Produto")
-                produtos_disponiveis = sorted(df_filtrado['nome_produto'].unique())
-                produtos_selecionados = st.multiselect("Selecione um ou mais produtos para analisar:", options=produtos_disponiveis)
-
-                if produtos_selecionados:
-                    df_mix = df_filtrado[df_filtrado['nome_produto'].isin(produtos_selecionados)]
-                    resumo_mix = df_mix.groupby(['Mes_Ano', 'nome_produto']).agg({'volume_caixas': 'sum'}).reset_index().sort_values('Mes_Ano')
-
-                    if not resumo_mix.empty:
-                        resumo_mix['volume_caixas'] = resumo_mix['volume_caixas'].round(0)
-                        resumo_mix['Rotulo'] = resumo_mix['volume_caixas'].apply(lambda x: f"{x:,.0f} cx".replace(',', '.'))
-
-                        fig_mix_prod = px.bar(resumo_mix, x='Mes_Ano', y='volume_caixas', color='nome_produto', text='Rotulo')
-                        max_vol = resumo_mix['volume_caixas'].max()
-                        fig_mix_prod.update_traces(texttemplate='%{text}', textposition='outside', textfont_size=16, textfont_color="white", cliponaxis=False)
-                        fig_mix_prod.update_layout(barmode='group', xaxis=dict(type='category'), yaxis=dict(range=[0, max_vol * 1.2], showticklabels=False, showgrid=False), xaxis_title=None, yaxis_title=None, plot_bgcolor='rgba(0,0,0,0)', legend=dict(title="", orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5), margin=dict(t=40, b=80))
-                        st.plotly_chart(fig_mix_prod, use_container_width=True, config={'displayModeBar': False})
+                        df_equip_agrupado = df_equip.groupby('tipo_equipamento')['quantidade'].sum().reset_index()
+                        num_meses = (df_filtrado['Mes_Ano'].nunique()) or 1
+                        encontrou = False
                         
-                        with st.expander("Ver detalhamento em tabela"):
-                            tabela_mix = df_mix.groupby(['codigo_produto', 'nome_produto', 'categoria_produto']).agg({'volume_caixas': 'sum'}).reset_index().sort_values('volume_caixas', ascending=False)
-                            tabela_mix['volume_caixas'] = tabela_mix['volume_caixas'].map('{:,.0f} cx'.format).str.replace(',', '.')
-                            st.dataframe(tabela_mix, use_container_width=True, hide_index=True)
-                else:
-                    st.info("👆 Selecione um ou mais produtos no filtro acima para gerar o gráfico de evolução.")
+                        for _, row in df_equip_agrupado.iterrows():
+                            tipo_eq, qtd = row['tipo_equipamento'], int(row['quantidade'])
+                            if qtd <= 0: continue
+                            
+                            if 'VISA' in tipo_eq: meta, fat_realizado, titulo, encontrou = 1200 * qtd * num_meses, df_filtrado[df_filtrado['equipamento'].astype(str).str.upper().str.contains('VISA', na=False)]['faturamento_reais'].sum(), f"🥤 {qtd}x VISA (NAB)", True
+                            elif 'SOPI' in tipo_eq: meta, fat_realizado, titulo, encontrou = 2000 * qtd * num_meses, df_filtrado[df_filtrado['equipamento'].astype(str).str.upper().str.contains('SOPI', na=False)]['faturamento_reais'].sum(), f"🍺 {qtd}x SOPI (Cerveja)", True
+                            elif 'CHOP' in tipo_eq: meta, fat_realizado, titulo, encontrou = 3870 * qtd * num_meses, df_filtrado[df_filtrado['codigo_produto'].astype(str).isin(['838', '8037'])]['faturamento_reais'].sum(), f"🍻 {qtd}x CHOPEIRA (Chopp)", True
+                            else: continue
+                                
+                            st.write(f"**{titulo}**")
+                            st.caption(f"Meta: R$ {meta:,.0f}".replace(",", "."))
+                            st.progress(min(fat_realizado / meta, 1.0) if meta > 0 else 0)
+                            realizado_str = f"R$ {fat_realizado:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                            if fat_realizado >= meta: st.success(f"Realizado: **{realizado_str}**")
+                            else: st.error(f"Faltam R$ {(meta - fat_realizado):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+                            st.write("---")
+                    else: st.info("Sem equipamentos na base.")
 
-                st.divider()
-                st.subheader("🏆 Ranking Geral do Mix de Produtos (Caixas)")
-                
-                ranking_mix = df_filtrado.groupby('nome_produto').agg({'volume_caixas': 'sum'}).reset_index().sort_values('volume_caixas', ascending=False)
-                
-                if not ranking_mix.empty:
-                    ranking_mix = ranking_mix.iloc[::-1]
-                    altura_grafico = max(450, len(ranking_mix) * 35)
-                    
-                    fig_ranking = px.bar(
-                        ranking_mix, 
-                        x='volume_caixas', 
-                        y='nome_produto', 
-                        orientation='h', 
-                        text='volume_caixas', 
-                        color='volume_caixas', 
-                        color_continuous_scale='RdYlGn'
-                    )
-                    
-                    fig_ranking.update_traces(texttemplate='%{text:,.0f} cx', textposition='outside', textfont_size=14, cliponaxis=False)
-                    fig_ranking.update_layout(xaxis=dict(showticklabels=False, showgrid=False), yaxis_title=None, showlegend=False, coloraxis_showscale=False, plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0, r=80, t=30, b=0), height=altura_grafico)
-                    st.plotly_chart(fig_ranking, use_container_width=True, config={'displayModeBar': False})
-                else:
-                    st.info("Dados insuficientes para gerar o ranking no período selecionado.")
+                st.subheader("📦 Análise por Produto")
+                prod_disp = sorted(df_filtrado['nome_produto'].unique())
+                prod_sel = st.multiselect("Selecione produtos:", options=prod_disp)
+                if prod_sel:
+                    df_mix = df_filtrado[df_filtrado['nome_produto'].isin(prod_sel)].groupby(['Mes_Ano', 'nome_produto'])['volume_caixas'].sum().reset_index()
+                    if not df_mix.empty:
+                        df_mix['Rotulo'] = df_mix['volume_caixas'].apply(lambda x: f"{x:,.0f} cx".replace(',', '.'))
+                        fig_mix = px.bar(df_mix, x='Mes_Ano', y='volume_caixas', color='nome_produto', text='Rotulo', barmode='group')
+                        fig_mix.update_traces(textposition='outside', cliponaxis=False)
+                        fig_mix.update_layout(xaxis_title=None, yaxis_title=None, plot_bgcolor='rgba(0,0,0,0)')
+                        st.plotly_chart(fig_mix, use_container_width=True)
 
             with tab_tarefas:
-                st.markdown("### 📋 Planificador de Execução (Tabela Original)")
                 if not df_tarefas.empty:
-                    colunas_presentes = [c for c in colunas_ordem_tarefas if c in df_tarefas.columns]
-                    df_tarefas_limpo = df_tarefas[colunas_presentes]
-                    
-                    col_espaco, col_excel, col_pdf = st.columns([2, 1, 1])
-                    
-                    with col_excel:
-                        excel_cliente = gerar_excel_formatado(df_tarefas_limpo)
-                        st.download_button(
-                            label="📥 Baixar Excel",
-                            data=excel_cliente,
-                            file_name=f"Tarefas_Cliente_{codigo_input}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
-                        
-                    with col_pdf:
-                        pdf_cliente = gerar_pdf_formatado(df_tarefas_limpo)
-                        st.download_button(
-                            label="📄 Baixar PDF",
-                            data=pdf_cliente,
-                            file_name=f"Tarefas_Cliente_{codigo_input}.pdf",
-                            mime="application/pdf"
-                        )
-                    
-                    st.dataframe(df_tarefas_limpo, use_container_width=True, hide_index=True)
-                else:
-                    st.info("Nenhuma tarefa mapeada para este cliente no ficheiro Excel.")
-    else:
-        st.info("👋 Bem-vindo! Utilize o campo acima para buscar as informações de um cliente pelo código.")
+                    col_pres = [c for c in colunas_ordem_tarefas if c in df_tarefas.columns]
+                    df_t_limpo = df_tarefas[col_pres]
+                    c_xls, c_pdf = st.columns([1, 1])
+                    c_xls.download_button("📥 Baixar Excel", gerar_excel_formatado(df_t_limpo), f"Tarefas_{codigo_input}.xlsx")
+                    c_pdf.download_button("📄 Baixar PDF", gerar_pdf_formatado(df_t_limpo), f"Tarefas_{codigo_input}.pdf")
+                    st.dataframe(df_t_limpo, use_container_width=True, hide_index=True)
+                else: st.info("Nenhuma tarefa mapeada.")
 
-# =====================================================================
-# PÁGINA 3: PLANIFICADOR GLOBAL (A TABELA COM FILTROS DA SUA IMAGEM)
-# =====================================================================
+# ==================== PÁGINA 3 ====================
 elif menu == "📋 Planificador de Tarefas":
     st.title("📋 Planificador Global de Tarefas")
     
-    with st.spinner("A carregar base de tarefas global..."):
-        df_todas_tarefas = buscar_todas_tarefas()
-        
-    st.markdown("Visão completa de execução e missões com filtros ativos da base de dados.")
-    st.caption(f"🔄 Nuvem atualizada com Tarefas em: **{buscar_data_atualizacao('tarefas')}**")
+    with st.spinner("A carregar base global..."):
+        df_todas_tarefas = carregar_dados_tarefas()
+        df_todas_tarefas = limpar_colunas_tarefas(df_todas_tarefas)
 
     if not df_todas_tarefas.empty:
-        def obter_coluna(df, possiveis_nomes):
-            col_map = {str(c).lower().strip(): c for c in df.columns}
-            for n in possiveis_nomes:
-                if str(n).lower().strip() in col_map:
-                    return col_map[str(n).lower().strip()]
-            return None
+        def get_col(df, nomes):
+            cmap = {str(c).lower().strip(): c for c in df.columns}
+            return next((cmap[n] for n in nomes if n in cmap), None)
             
-        c_cliente = obter_coluna(df_todas_tarefas, ['codigo_cliente', 'codigo cliente', 'cliente'])
-        c_cat = obter_coluna(df_todas_tarefas, ['Categoria', 'categoria'])
-        c_clust = obter_coluna(df_todas_tarefas, ['Cluster Primário', 'Cluster Primario', 'cluster_primario'])
-        c_setor = obter_coluna(df_todas_tarefas, ['Setor', 'setor'])
-        c_data_visita = obter_coluna(df_todas_tarefas, ['Data Visita', 'Data_Visita', 'data_visita'])
+        c_cli, c_cat, c_clust, c_setor, c_data = get_col(df_todas_tarefas, ['codigo_cliente']), get_col(df_todas_tarefas, ['categoria']), get_col(df_todas_tarefas, ['cluster primário', 'cluster_primario']), get_col(df_todas_tarefas, ['setor']), get_col(df_todas_tarefas, ['data visita', 'data_visita'])
 
-        with st.expander("🔍 Filtros de Segmentação e Rota", expanded=True):
-            col1, col2, col3, col4, col5 = st.columns(5)
-            
-            with col1:
-                opt_cli = sorted(df_todas_tarefas[c_cliente].dropna().astype(str).unique()) if c_cliente else []
-                f_cliente = st.multiselect("Código Cliente", opt_cli)
-                
-            with col2:
-                opt_cat = sorted(df_todas_tarefas[c_cat].dropna().astype(str).unique()) if c_cat else []
-                f_cat = st.multiselect("Categoria", opt_cat)
-                
-            with col3:
-                opt_clust = sorted(df_todas_tarefas[c_clust].dropna().astype(str).unique()) if c_clust else []
-                f_clust = st.multiselect("Cluster Primário", opt_clust)
-                
-            with col4:
-                opt_setor = sorted(df_todas_tarefas[c_setor].dropna().astype(str).unique()) if c_setor else []
-                f_setor = st.multiselect("Setor", opt_setor)
-                
-            with col5:
-                opt_data = sorted(df_todas_tarefas[c_data_visita].dropna().astype(str).unique()) if c_data_visita else []
-                f_data_visita = st.multiselect("Data Visita", opt_data)
+        with st.expander("🔍 Filtros", expanded=True):
+            co1, co2, co3, co4, co5 = st.columns(5)
+            f_cli = co1.multiselect("Código", sorted(df_todas_tarefas[c_cli].dropna().astype(str).unique()) if c_cli else [])
+            f_cat = co2.multiselect("Categoria", sorted(df_todas_tarefas[c_cat].dropna().astype(str).unique()) if c_cat else [])
+            f_clust = co3.multiselect("Cluster", sorted(df_todas_tarefas[c_clust].dropna().astype(str).unique()) if c_clust else [])
+            f_setor = co4.multiselect("Setor", sorted(df_todas_tarefas[c_setor].dropna().astype(str).unique()) if c_setor else [])
+            f_data = co5.multiselect("Data", sorted(df_todas_tarefas[c_data].dropna().astype(str).unique()) if c_data else [])
 
-        df_filtrado = df_todas_tarefas.copy()
+        df_filtro = df_todas_tarefas.copy()
+        if f_cli: df_filtro = df_filtro[df_filtro[c_cli].astype(str).isin(f_cli)]
+        if f_cat: df_filtro = df_filtro[df_filtro[c_cat].astype(str).isin(f_cat)]
+        if f_clust: df_filtro = df_filtro[df_filtro[c_clust].astype(str).isin(f_clust)]
+        if f_setor: df_filtro = df_filtro[df_filtro[c_setor].astype(str).isin(f_setor)]
+        if f_data: df_filtro = df_filtro[df_filtro[c_data].astype(str).isin(f_data)]
         
-        if f_cliente and c_cliente: df_filtrado = df_filtrado[df_filtrado[c_cliente].astype(str).isin(f_cliente)]
-        if f_cat and c_cat: df_filtrado = df_filtrado[df_filtrado[c_cat].astype(str).isin(f_cat)]
-        if f_clust and c_clust: df_filtrado = df_filtrado[df_filtrado[c_clust].astype(str).isin(f_clust)]
-        if f_setor and c_setor: df_filtrado = df_filtrado[df_filtrado[c_setor].astype(str).isin(f_setor)]
-        if f_data_visita and c_data_visita: df_filtrado = df_filtrado[df_filtrado[c_data_visita].astype(str).isin(f_data_visita)]
-        
-        colunas_presentes = [c for c in colunas_ordem_tarefas if c in df_filtrado.columns]
-        df_exibicao = df_filtrado[colunas_presentes]
-        
-        col_resumo, col_excel, col_pdf = st.columns([2, 1, 1])
-        with col_resumo:
-            st.markdown(f"**Total de Tarefas em Tela:** `{len(df_exibicao)} linhas`")
-        
-        with col_excel:
-            excel_global = gerar_excel_formatado(df_exibicao)
-            st.download_button(
-                label="📥 Baixar Excel",
-                data=excel_global,
-                file_name="Planificador_Filtrado.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            
-        with col_pdf:
-            pdf_global = gerar_pdf_formatado(df_exibicao)
-            st.download_button(
-                label="📄 Baixar PDF",
-                data=pdf_global,
-                file_name="Planificador_Filtrado.pdf",
-                mime="application/pdf"
-            )
-            
-        st.dataframe(df_exibicao, use_container_width=True, hide_index=True, height=600)
+        df_exibicao = df_filtro[[c for c in colunas_ordem_tarefas if c in df_filtro.columns]]
+        st.markdown(f"**Total:** `{len(df_exibicao)} linhas`")
+        cx, cp = st.columns(2)
+        cx.download_button("📥 Excel", gerar_excel_formatado(df_exibicao), "Planificador.xlsx")
+        cp.download_button("📄 PDF", gerar_pdf_formatado(df_exibicao), "Planificador.pdf")
+        st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
     else:
-        st.warning("A tabela de tarefas está vazia. Execute o ficheiro `atualizar_tarefas.py` com o ficheiro Excel na pasta para subir os dados.")
+        st.warning("Gere o ficheiro tarefas.parquet usando o script local.")
